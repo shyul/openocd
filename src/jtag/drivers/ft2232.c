@@ -194,6 +194,7 @@ static int lisa_l_init(void);
 static int flossjtag_init(void);
 static int xds100v2_init(void);
 static int digilent_hs1_init(void);
+static int lophilo_init(void);
 
 /* reset procedures for supported layouts */
 static void ftx23_reset(int trst, int srst);
@@ -213,6 +214,7 @@ static void ktlink_reset(int trst, int srst);
 static void redbee_reset(int trst, int srst);
 static void xds100v2_reset(int trst, int srst);
 static void digilent_hs1_reset(int trst, int srst);
+static void lophilo_reset(int trst, int srst);
 
 /* blink procedures for layouts that support a blinking led */
 static void olimex_jtag_blink(void);
@@ -342,6 +344,11 @@ static const struct ft2232_layout  ft2232_layouts[] = {
 	{ .name = "digilent-hs1",
 		.init = digilent_hs1_init,
 		.reset = digilent_hs1_reset,
+		.channel = INTERFACE_A,
+	},
+	{ .name = "lophilo",
+		.init = lophilo_init,
+		.reset = lophilo_reset,
 		.channel = INTERFACE_A,
 	},
 	{ .name = NULL, /* END OF TABLE */ },
@@ -1324,8 +1331,7 @@ static void ftx23_reset(int trst, int srst)
 			low_output &= ~nTRST;		/* switch output low */
 	} else if (trst == 0) {
 		if (jtag_reset_config & RESET_TRST_OPEN_DRAIN)
-			low_direction &= ~nTRSTnOE;	/* switch to input pin (high-Z + internal
-							 *and external pullup) */
+			low_direction &= ~nTRSTnOE;	/* switch to input pin (high-Z + internal and external pullup) */
 		else
 			low_output |= nTRST;		/* switch output high */
 	}
@@ -4212,6 +4218,71 @@ static void digilent_hs1_reset(int trst, int srst)
 {
 	/* Dummy function, no reset signals supported. */
 }
+
+/********************************************************************
+ * Support for Lophilo
+ * JTAG debug adapter on Lophilo boards
+ * http://lophilo.com
+ * Author: Zhizhou Li, lzz@meteroi.com
+ *         Shyu Lee, shyul@lophilo.com
+ *******************************************************************/
+
+static int lophilo_init(void)
+{
+	// located at low output
+	nTRST = (1 << 4);
+	nTRSTnOE = (1 << 4);
+
+	// located at high output
+	nSRST = (1 << 7);
+	nSRSTnOE = (1 << 7);
+
+	low_output    = 0x18;		// value; nTRST=1, TMS=1, TCK=0, TDI=0
+	low_direction = 0xDB;		// out=1; TCK/TDI/TMS/nTRST/EMU0/EMU1=out, TDO/RTCK=in
+
+	if (ft2232_set_data_bits_low_byte(low_output, low_direction) != ERROR_OK) {
+		LOG_ERROR("Couldn't initialize lophilo debug interface.");
+		return ERROR_JTAG_INIT_FAILED;
+	}
+
+	high_output    = 0x8C;	// turn 244 buffer on. (DBGEN = low)
+	high_direction = 0x40;	// Set directions. (nSRST is set as input, DBGEN as output)
+
+	if (ft2232_set_data_bits_high_byte(high_output, high_direction) != ERROR_OK) {
+		LOG_ERROR("Couldn't initialize lophilo debug interface.");
+		return ERROR_JTAG_INIT_FAILED;
+	}
+
+	return ERROR_OK;
+}
+
+static void lophilo_reset(int trst, int srst)
+{
+	enum reset_types jtag_reset_config = jtag_get_reset_config();
+
+	if (trst == 1) {
+			low_output &= ~nTRST;
+	} else if (trst == 0) {
+			low_output |= nTRST;
+	}
+
+	buffer_write(0x80);	/* command "set data bits low byte" */
+	buffer_write(low_output);
+	buffer_write(low_direction);
+
+	if (srst == 1) {
+		high_output &= ~nSRST; // Set nSRST as low
+		high_direction |= nSRSTnOE; // Set nSRST as output pin
+	} else if (srst == 0) {
+		high_output |= nSRST; // Set nSRST as high
+		high_direction &= ~nSRSTnOE; // Set nSRST as input pin
+	}
+
+	buffer_write(0x82);	/* command "set data bits high byte" */
+	buffer_write(high_output);
+	buffer_write(high_direction);
+}
+
 
 static const struct command_registration ft2232_command_handlers[] = {
 	{
